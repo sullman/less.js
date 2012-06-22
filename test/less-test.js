@@ -16,6 +16,13 @@ less.tree.functions._color = function (str) {
 
 sys.puts("\n" + stylize("LESS", 'underline') + "\n");
 
+var test_result_dir = '/tmp/less_test_results';
+if (path.existsSync(test_result_dir)) {
+  fs.readdirSync(test_result_dir).forEach(function (file) {
+    fs.unlinkSync(path.join(test_result_dir, file));
+  });
+}
+
 fs.readdirSync('test/less').forEach(function (file) {
     if (! /\.less/.test(file)) { return }
 
@@ -28,6 +35,9 @@ fs.readdirSync('test/less').forEach(function (file) {
             else if (err) {
                 sys.print(stylize("ERROR: " + (err && err.message), 'red'));
             } else {
+                fs.mkdir(test_result_dir);
+                fs.writeFile(path.join(test_result_dir, name) + '-actual.css', less, 'utf-8');
+                fs.writeFile(path.join(test_result_dir, name) + '-expected.css', css, 'utf-8');
                 sys.print(stylize("FAIL", 'yellow'));
             }
             sys.puts("");
