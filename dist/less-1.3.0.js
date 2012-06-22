@@ -226,11 +226,15 @@ less.Parser = function Parser(env) {
             //
             less.Parser.importer(path, this.paths, function (e, root, contents) {
                 that.queue.splice(that.queue.indexOf(path), 1); // Remove the path from the queue
+
+                var imported = path in that.files;
+
                 that.files[path] = root;                        // Store the root
                 that.contents[path] = contents;
 
                 if (e && !that.error) { that.error = e }
-                callback(e, root);
+
+                callback(e, root, imported);
 
                 if (that.queue.length === 0) { finish() }       // Call `finish` if we're done importing
             }, env);
@@ -821,7 +825,7 @@ less.Parser = function Parser(env) {
                     var value, c = input.charCodeAt(i);
                     if ((c > 57 || c < 45) || c === 47) return;
 
-                    if (value = $(/^(-?\d*\.?\d+)(px|%|em|rem|pc|ex|in|deg|s|ms|pt|cm|mm|rad|grad|turn)?/)) {
+                    if (value = $(/^(-?\d*\.?\d+)(px|%|em|rem|pc|ex|in|deg|s|ms|pt|cm|mm|rad|grad|turn|dpi)?/)) {
                         return new(tree.Dimension)(value[1], value[2]);
                     }
                 },
@@ -889,7 +893,7 @@ less.Parser = function Parser(env) {
                 // selector for now.
                 //
                 call: function () {
-                    var elements = [], e, c, args, index = i, s = input.charAt(i), important = false;
+                    var elements = [], e, c, args = [], arg, index = i, s = input.charAt(i), name, value, important = false;
 
                     if (s !== '.' && s !== '#') { return }
 
@@ -897,14 +901,38 @@ less.Parser = function Parser(env) {
                         elements.push(new(tree.Element)(c, e, i));
                         c = $('>');
                     }
-                    $('(') && (args = $(this.entities.arguments)) && $(')');
+                    if ($('(')) {
+                        while (arg = $(this.expression)) {
+                            value = arg;
+                            name = null;
+
+                            // Variable
+                            if (arg.value.length == 1) {
+                                var val = arg.value[0];
+                                if (val instanceof tree.Variable) {
+                                    if ($(':')) {
+                                        if (value = $(this.expression)) {
+                                            name = val.name;
+                                        } else {
+                                            throw new(Error)("Expected value");
+                                        }
+                                    }
+                                }
+                            }
+
+                            args.push({ name: name, value: value });
+
+                            if (! $(',')) { break }
+                        }
+                        if (! $(')')) throw new(Error)("Expected )");
+                    }
 
                     if ($(this.important)) {
                         important = true;
                     }
 
                     if (elements.length > 0 && ($(';') || peek('}'))) {
-                        return new(tree.mixin.Call)(elements, args || [], index, env.filename, important);
+                        return new(tree.mixin.Call)(elements, args, index, env.filename, important);
                     }
                 },
 
@@ -1192,11 +1220,12 @@ less.Parser = function Parser(env) {
             //
             "import": function () {
                 var path, features, index = i;
-                if ($(/^@import\s+/) &&
-                    (path = $(this.entities.quoted) || $(this.entities.url))) {
+                var dir = $(/^@import(?:-(once))?\s+/);
+
+                if (dir && (path = $(this.entities.quoted) || $(this.entities.url))) {
                     features = $(this.mediaFeatures);
                     if ($(';')) {
-                        return new(tree.Import)(path, imports, features, index);
+                        return new(tree.Import)(path, imports, features, (dir[1] === 'once'), index);
                     }
                 }
             },
@@ -2179,7 +2208,12 @@ tree.Element.prototype.eval = function (env) {
                              this.index);
 };
 tree.Element.prototype.toCSS = function (env) {
-    return this.combinator.toCSS(env || {}) + (this.value.toCSS ? this.value.toCSS(env) : this.value);
+	var value = (this.value.toCSS ? this.value.toCSS(env) : this.value);
+	if (value == '' && this.combinator.value.charAt(0) == '&') {
+		return '';
+	} else {
+		return this.combinator.toCSS(env || {}) + value;
+	}
 };
 
 tree.Combinator = function (value) {
@@ -2241,9 +2275,10 @@ tree.Expression.prototype = {
 // `import,push`, we also pass it a callback, which it'll call once
 // the file has been fetched, and parsed.
 //
-tree.Import = function (path, imports, features, index) {
+tree.Import = function (path, imports, features, once, index) {
     var that = this;
 
+    this.once = once;
     this.index = index;
     this._path = path;
     this.features = features && new(tree.Value)(features);
@@ -2259,8 +2294,9 @@ tree.Import = function (path, imports, features, index) {
 
     // Only pre-compile .less files
     if (! this.css) {
-        imports.push(this.path, function (e, root) {
+        imports.push(this.path, function (e, root, imported) {
             if (e) { e.index = index }
+            if (imported && that.once) that.skip = imported;
             that.root = root || new(tree.Ruleset)([], []);
         });
     }
@@ -2287,6 +2323,8 @@ tree.Import.prototype = {
     },
     eval: function (env) {
         var ruleset, features = this.features && this.features.eval(env);
+
+        if (this.skip) return [];
 
         if (this.css) {
             return this;
@@ -2507,7 +2545,9 @@ tree.mixin.Call.prototype = {
 
         for (var i = 0; i < env.frames.length; i++) {
             if ((mixins = env.frames[i].find(this.selector)).length > 0) {
-                args = this.arguments && this.arguments.map(function (a) { return a.eval(env) });
+                args = this.arguments && this.arguments.map(function (a) {
+                    return { name: a.name, value: a.value.eval(env) };
+                });
                 for (var m = 0; m < mixins.length; m++) {
                     if (mixins[m].match(args, env)) {
                         try {
@@ -2562,17 +2602,26 @@ tree.mixin.Definition.prototype = {
     rulesets:  function ()     { return this.parent.rulesets.apply(this) },
 
     evalParams: function (env, args) {
-        var frame = new(tree.Ruleset)(null, []), varargs;
+        var frame = new(tree.Ruleset)(null, []), varargs, arg;
 
         for (var i = 0, val, name; i < this.params.length; i++) {
+            arg = args && args[i]
+
+            if (arg && arg.name) {
+                frame.rules.unshift(new(tree.Rule)(arg.name, arg.value.eval(env)));
+                args.splice(i, 1);
+                i--;
+                continue;
+            }
+			
             if (name = this.params[i].name) {
                 if (this.params[i].variadic && args) {
                     varargs = [];
                     for (var j = i; j < args.length; j++) {
-                        varargs.push(args[j].eval(env));
+                        varargs.push(args[j].value.eval(env));
                     }
                     frame.rules.unshift(new(tree.Rule)(name, new(tree.Expression)(varargs).eval(env)));
-                } else if (val = (args && args[i]) || this.params[i].value) {
+                } else if (val = (arg && arg.value) || this.params[i].value) {
                     frame.rules.unshift(new(tree.Rule)(name, val.eval(env)));
                 } else {
                     throw { type: 'Runtime', message: "wrong number of arguments for " + this.name +
@@ -2586,7 +2635,7 @@ tree.mixin.Definition.prototype = {
         var frame = this.evalParams(env, args), context, _arguments = [], rules, start;
 
         for (var i = 0; i < Math.max(this.params.length, args && args.length); i++) {
-            _arguments.push(args[i] || this.params[i].value);
+            _arguments.push((args[i] && args[i].value) || this.params[i].value);
         }
         frame.rules.unshift(new(tree.Rule)('@arguments', new(tree.Expression)(_arguments).eval(env)));
 
@@ -2616,7 +2665,7 @@ tree.mixin.Definition.prototype = {
 
         for (var i = 0; i < len; i++) {
             if (!this.params[i].name) {
-                if (args[i].eval(env).toCSS() != this.params[i].value.eval(env).toCSS()) {
+                if (args[i].value.eval(env).toCSS() != this.params[i].value.eval(env).toCSS()) {
                     return false;
                 }
             }
@@ -2684,10 +2733,11 @@ tree.Quoted = function (str, content, escaped, i) {
 };
 tree.Quoted.prototype = {
     toCSS: function () {
+        var value = this.relativized || this.value;
         if (this.escaped) {
-            return this.value;
+            return value;
         } else {
-            return this.quote + this.value + this.quote;
+            return this.quote + value + this.quote;
         }
     },
     eval: function (env) {
@@ -2861,6 +2911,7 @@ tree.Ruleset.prototype = {
     toCSS: function (context, env) {
         var css = [],      // The CSS output
             rules = [],    // node.Rule instances
+           _rules = [],    //
             rulesets = [], // node.Ruleset instances
             paths = [],    // Current selectors
             selector,      // The fully rendered selector
@@ -2910,7 +2961,15 @@ tree.Ruleset.prototype = {
                     return p.map(function (s) {
                         return s.toCSS(env);
                     }).join('').trim();
-                }).join( env.compress ? ',' : ',\n');
+                }).join(env.compress ? ',' : ',\n');
+
+                // Remove duplicates
+                for (var i = rules.length - 1; i >= 0; i--) {
+                    if (_rules.indexOf(rules[i]) === -1) {
+                        _rules.unshift(rules[i]);
+                    }
+                }
+                rules = _rules;
 
                 css.push(selector,
                         (env.compress ? '{' : ' {\n  ') +
@@ -3010,8 +3069,34 @@ tree.URL = function (val, paths) {
         this.attrs = val;
     } else {
         // Add the base path if the URL is relative and we are in the browser
-        if (typeof(window) !== 'undefined' && !/^(?:https?:\/\/|file:\/\/|data:|\/)/.test(val.value) && paths.length > 0) {
-            val.value = paths[0] + (val.value.charAt(0) === '/' ? val.value.slice(1) : val.value);
+        if (val.value && !/^(?:https?:\/\/|file:\/\/|data:|\/)/.test(val.value) && paths.length > 0) {
+            if (typeof(window) !== 'undefined') {
+                val.value = paths[0] + (val.value.charAt(0) === '/' ? val.value.slice(1) : val.value);
+            } else {
+                var path = '';
+                for (var i = 0; i < paths.length; i++) {
+                    path = paths[i] + '/' + path;
+                    if (path[0] != '.')
+                        break;
+                }
+
+                var baseDir = paths[paths.length-1];
+                if (path.lastIndexOf(baseDir, 0) === 0) {
+                    path = path.substring(baseDir.length + 1);
+                }
+                path = path + (val.value.charAt(0) === '/' ? val.value.slice(1) : val.value);
+                var components = path.split('/');
+                for (var i = 0; i < components.length; i++) {
+                    if (components[i] === '.') {
+                        components.splice(i--, 1);
+                    } else if (components[i] === '..' && i > 0 && components[i - 1] !== '..') {
+                        components.splice(i - 1, 2);
+                        i -= 2;
+                    }
+                }
+
+                val.relativized = components.join('/');
+            }
         }
         this.value = val;
         this.paths = paths;

@@ -5,6 +5,7 @@
 @import url(something.css) screen and (color) and (max-width: 600px);
 #import {
   color: #ff0000;
+  background-image: url("import/relative.png");
 }
 .mixin {
   height: 10px;

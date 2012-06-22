@@ -1,0 +1,36 @@
+@import "import-test-d.css";
+#import {
+  color: #ff0000;
+  background-image: url("import/relative.png");
+}
+.mixin {
+  height: 10px;
+  color: #ff0000;
+}
+.subdir {
+  background-image: url("import/subdir/blah.png");
+}
+.parent {
+  background-image: url("import/parent.png");
+}
+.grandparent {
+  background-image: url("grandparent.png");
+}
+.relative {
+  background-image: url("import/relative.png");
+}
+.subdir {
+  background-image: url("import/subdir/blah.png");
+}
+.parent {
+  background-image: url("import/parent.png");
+}
+.grandparent {
+  background-image: url("grandparent.png");
+}
+#import-test {
+  height: 10px;
+  color: #ff0000;
+  width: 10px;
+  height: 30%;
+}

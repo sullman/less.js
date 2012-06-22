@@ -1,0 +1,9 @@
+@import url("import/import-test-a.less");
+@import "import/import-test-f.less";
+@import "import/subdir/import-subdir.less";
+
+#import-test {
+  .mixin;
+  width: 10px;
+  height: @a + 10%;
+}
